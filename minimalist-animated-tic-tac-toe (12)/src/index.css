@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+
+  --color-paper: #f6f2e9;
+  --color-cream: #fdfbf5;
+  --color-ink: #191510;
+  --color-coral: #e8552f;
+  --color-pine: #17705c;
+  --color-amber: #d97706;
+  --color-blush: #f5d5c8;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+    /* respect notches / rounded corners */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+      env(safe-area-inset-left);
+  }
+
+  body {
+    @apply min-h-dvh bg-paper font-sans text-ink antialiased;
+    /* stop iOS rubber-banding behind fixed overlays */
+    overscroll-behavior-y: none;
+  }
+
+  ::selection {
+    @apply bg-coral text-cream;
+  }
+
+  /* comfortable tap targets on touch devices */
+  @media (pointer: coarse) {
+    button {
+      touch-action: manipulation;
+    }
+  }
+}
+
+/* the board scales with whichever axis is tighter, so it always fits */
+.board-fit {
+  width: min(380px, 92vw, calc(100dvh - 22rem));
+}
+
+@media (min-width: 640px) {
+  .board-fit {
+    width: min(380px, 92vw, calc(100dvh - 20rem));
+  }
+}
+
+/* Malayalam roast text — Space Grotesk has no Malayalam glyphs */
+.font-mal {
+  font-family: "Noto Sans Malayalam", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+/* Subtle paper grain overlay */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+}
+
+/* blend-mode multiplies are expensive on mobile GPUs — fall back to plain alpha */
+@media (pointer: coarse) {
+  .grain {
+    mix-blend-mode: normal;
+    opacity: 0.6;
+  }
+}
