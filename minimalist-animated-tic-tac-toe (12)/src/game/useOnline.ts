@@ -326,30 +326,37 @@ export function useOnlineSession() {
 
         setSignalOk(true);
 
-        // Listen for guest answer
+        // ICE connection failure detection
+        pc.oniceconnectionstatechange = () => {
+          if (pcRef.current !== pc) return;
+          if (pc.iceConnectionState === "failed") {
+            setError("connection failed — both players try again");
+            setStatus((prev) => (prev === "connected" ? "closed" : "error"));
+          }
+        };
+
+        // Listen for guest answer — THEN subscribe to guest ICE candidates
+        // (addIceCandidate requires remoteDescription to be set first!)
         const answerRef = ref(db, `rooms/${c}/answer`);
         onValue(answerRef, async (snap) => {
           if (!snap.exists() || pcRef.current !== pc) return;
-          if (pc.remoteDescription) return; // already have one
+          if (pc.remoteDescription) return; // already handled
           try {
             await pc.setRemoteDescription(
-              new RTCSessionDescription(
-                snap.val() as RTCSessionDescriptionInit
-              )
+              new RTCSessionDescription(snap.val() as RTCSessionDescriptionInit)
             );
+            // Only NOW subscribe to guest ICE candidates — setRemoteDescription is done
+            const gCandRef = ref(db, `rooms/${c}/guestCandidates`);
+            onChildAdded(gCandRef, (candSnap) => {
+              if (pcRef.current !== pc) return;
+              pc.addIceCandidate(
+                new RTCIceCandidate(candSnap.val() as RTCIceCandidateInit)
+              ).catch(() => {});
+            });
+            fbUnsub.current.push(() => off(gCandRef));
           } catch { /* noop */ }
         });
         fbUnsub.current.push(() => off(answerRef));
-
-        // Listen for guest ICE candidates
-        const gCandRef = ref(db, `rooms/${c}/guestCandidates`);
-        onChildAdded(gCandRef, (snap) => {
-          if (pcRef.current !== pc) return;
-          pc.addIceCandidate(
-            new RTCIceCandidate(snap.val() as RTCIceCandidateInit)
-          ).catch(() => {});
-        });
-        fbUnsub.current.push(() => off(gCandRef));
       } catch {
         setError("failed to create room — please try again");
         setStatus("error");
