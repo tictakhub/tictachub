@@ -18,6 +18,7 @@ export type NetMessage =
   | { t: "move"; index: number }
   | { t: "cmd"; cmd: "newRound" | "reset" }
   | { t: "state"; game: GameState; names: OnlineNames }
+  | { t: "bye" }
   | { t: "full" };
 
 /** keep untrusted peer data from breaking the UI */
@@ -60,6 +61,28 @@ function makeCode(): string {
 
 const FALLBACK_NAMES: OnlineNames = { X: "Player X", O: "Player O" };
 
+/**
+ * STUN servers help two browsers find each other. For players behind strict
+ * mobile-carrier / corporate NATs you'd also add a TURN relay here, e.g.
+ * { urls: "turn:YOUR_HOST:3478", username: "...", credential: "..." }
+ */
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:global.stun.twilio.com:3478" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ],
+  },
+};
+
+/** errors that only mean "lost the signalling server for a moment" */
+const TRANSIENT = new Set(["network", "server-error", "socket-error", "socket-closed", "disconnected"]);
+
+/** how long a guest keeps knocking before giving up (host may be switching apps to send the link) */
+const JOIN_PATIENCE_MS = 45000;
+
 export function useOnlineSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [code, setCode] = useState("");
@@ -68,7 +91,12 @@ export function useOnlineSession() {
   const [myMark, setMyMark] = useState<Player | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [game, setGame] = useState<GameState>(initialState);
+  /** host only: is the room currently registered with the signalling server? */
+  const [signalOk, setSignalOk] = useState(false);
+  /** "left" = opponent clicked Leave; "dropped" = network/browser closed */
+  const [disconnectReason, setDisconnectReason] = useState<"left" | "dropped" | null>(null);
 
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const peerRef = useRef<Peer | null>(null);
   const connRef = useRef<DataConnection | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,6 +120,10 @@ export function useOnlineSession() {
 
   const teardown = useCallback(() => {
     clearTimer();
+    if (reconnectRef.current) {
+      clearTimeout(reconnectRef.current);
+      reconnectRef.current = null;
+    }
     try {
       connRef.current?.close();
     } catch {
@@ -108,13 +140,51 @@ export function useOnlineSession() {
 
   useEffect(() => teardown, [teardown]);
 
+  /* Phones suspend background tabs (e.g. while you paste the invite link into
+     WhatsApp) which drops the room from the signalling server. Reconnect the
+     moment the page is back, and keep nudging while it's visible. */
+  useEffect(() => {
+    const wake = () => {
+      const p = peerRef.current;
+      if (p && !p.destroyed && p.disconnected) {
+        try {
+          p.reconnect();
+        } catch {
+          /* noop */
+        }
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    const iv = setInterval(wake, 4000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      clearInterval(iv);
+    };
+  }, []);
+
   const leave = useCallback(() => {
+    // Send a clean farewell so the opponent knows it was intentional, not a drop
+    const c = connRef.current;
+    if (c?.open) {
+      try { c.send({ t: "bye" } satisfies NetMessage); } catch { /* ignore */ }
+    }
     teardown();
     setStatus("idle");
     setCode("");
     setNames(null);
     setMyMark(null);
     setError(null);
+    setSignalOk(false);
+    setDisconnectReason(null);
     setGame(initialState());
   }, [teardown]);
 
@@ -181,14 +251,55 @@ export function useOnlineSession() {
       setNames({ X: name, O: "joining…" });
       setStatus("hosting");
 
-      const peer = new Peer(ROOM_PREFIX + c.toLowerCase());
+      setSignalOk(false);
+      let opened = false;
+      const peer = new Peer(ROOM_PREFIX + c.toLowerCase(), PEER_CONFIG);
       peerRef.current = peer;
 
+      const scheduleReconnect = (ms = 1500) => {
+        if (reconnectRef.current) clearTimeout(reconnectRef.current);
+        reconnectRef.current = setTimeout(() => {
+          reconnectRef.current = null;
+          if (peerRef.current === peer && !peer.destroyed && peer.disconnected) {
+            try {
+              peer.reconnect();
+            } catch {
+              /* noop */
+            }
+          }
+        }, ms);
+      };
+
+      peer.on("open", () => {
+        if (peerRef.current !== peer) return;
+        opened = true;
+        setSignalOk(true);
+      });
+
+      /* lost the signalling server — the room would vanish for newcomers, so get it back */
+      peer.on("disconnected", () => {
+        if (peerRef.current !== peer) return;
+        setSignalOk(false);
+        scheduleReconnect();
+      });
+
       peer.on("error", (err) => {
-        const type = (err as { type?: string }).type;
+        if (peerRef.current !== peer) return;
+        const type = (err as { type?: string }).type ?? "";
         if (type === "unavailable-id") {
-          // extremely unlikely collision — try a fresh code
-          host(name);
+          if (opened) {
+            // our own old registration hasn't expired yet — keep the SAME code, retry shortly
+            setSignalOk(false);
+            scheduleReconnect(2500);
+          } else {
+            // extremely unlikely collision — try a fresh code
+            host(name, target, lang);
+          }
+          return;
+        }
+        if (TRANSIENT.has(type)) {
+          setSignalOk(false);
+          scheduleReconnect(2000);
           return;
         }
         setError("network hiccup — please try again");
@@ -197,7 +308,8 @@ export function useOnlineSession() {
 
       peer.on("connection", (conn) => {
         // the room holds exactly two players — turn away anyone else
-        if (connRef.current) {
+        const current = connRef.current;
+        if (current?.open) {
           try {
             conn.on("open", () => {
               conn.send({ t: "full" } satisfies NetMessage);
@@ -208,6 +320,14 @@ export function useOnlineSession() {
           }
           return;
         }
+        // a half-open / dead earlier attempt must not lock the room forever
+        if (current) {
+          try {
+            current.close();
+          } catch {
+            /* noop */
+          }
+        }
 
         connRef.current = conn;
         conn.on("open", () => {
@@ -215,6 +335,7 @@ export function useOnlineSession() {
           broadcast();
         });
         conn.on("data", (raw) => {
+          if (connRef.current !== conn) return;
           const msg = raw as NetMessage;
           if (!msg || typeof msg !== "object") return;
 
@@ -223,6 +344,9 @@ export function useOnlineSession() {
             setNames(n);
             setStatus("connected");
             broadcast(undefined, n);
+          } else if (msg.t === "bye") {
+            // guest intentionally left — record reason before the close fires
+            setDisconnectReason("left");
           } else if (msg.t === "move") {
             // only accept the guest's move, only on the guest's turn
             if (isIndex(msg.index) && gameRef.current.turn === "O") {
@@ -232,7 +356,19 @@ export function useOnlineSession() {
             if (msg.cmd === "newRound" || msg.cmd === "reset") hostApply({ type: msg.cmd });
           }
         });
-        conn.on("close", () => setStatus("closed"));
+        conn.on("close", () => {
+          if (connRef.current !== conn) return; // an older, replaced connection
+          connRef.current = null;
+          // If we got a "bye" from the guest, reason is already "left"; else "dropped"
+          setDisconnectReason((r) => r ?? "dropped");
+          // never got to play → go back to waiting so the link keeps working
+          setStatus((prev) => (prev === "connected" ? "closed" : "hosting"));
+        });
+        conn.on("error", () => {
+          if (connRef.current !== conn) return;
+          connRef.current = null;
+          setStatus((prev) => (prev === "connected" ? "closed" : "hosting"));
+        });
       });
     },
     [broadcast, hostApply, teardown]
@@ -249,23 +385,30 @@ export function useOnlineSession() {
       setCode(c);
       setStatus("connecting");
 
-      const peer = new Peer();
+      const peer = new Peer(PEER_CONFIG);
       peerRef.current = peer;
+      const deadline = Date.now() + JOIN_PATIENCE_MS;
+      let gotState = false;
 
-      timeoutRef.current = setTimeout(() => {
-        setError("couldn't reach the room — check the code");
+      const fail = (msg: string) => {
+        clearTimer();
+        setError(msg);
         setStatus("error");
         teardown();
-      }, 10000);
+      };
 
-      peer.on("error", (err) => {
-        clearTimer();
-        const type = (err as { type?: string }).type;
-        setError(type === "peer-unavailable" ? "room not found — check the code" : "network hiccup — try again");
-        setStatus("error");
-      });
+      timeoutRef.current = setTimeout(() => {
+        if (gotState) return;
+        fail("couldn't reach the room — ask your friend to keep the game open, then try again");
+      }, JOIN_PATIENCE_MS);
 
-      peer.on("open", () => {
+      const attempt = () => {
+        if (peerRef.current !== peer || peer.destroyed || gotState) return;
+        try {
+          connRef.current?.close();
+        } catch {
+          /* noop */
+        }
         const conn = peer.connect(ROOM_PREFIX + c.toLowerCase(), { reliable: true });
         connRef.current = conn;
         conn.on("open", () => {
@@ -276,11 +419,12 @@ export function useOnlineSession() {
           if (!msg || typeof msg !== "object") return;
 
           if (msg.t === "full") {
-            clearTimer();
-            setError("that room is already full");
-            setStatus("error");
-            teardown();
+            fail("that room is already full");
+          } else if (msg.t === "bye") {
+            // host intentionally quit — record reason before the close fires
+            setDisconnectReason("left");
           } else if (msg.t === "state" && msg.game && msg.names) {
+            gotState = true;
             clearTimer();
             setNames({ X: cleanName(msg.names.X), O: cleanName(msg.names.O) });
             gameRef.current = msg.game;
@@ -288,8 +432,26 @@ export function useOnlineSession() {
             setStatus("connected");
           }
         });
-        conn.on("close", () => setStatus("closed"));
+        conn.on("close", () => {
+          if (connRef.current === conn && gotState) {
+            setDisconnectReason((r) => r ?? "dropped");
+            setStatus("closed");
+          }
+        });
+      };
+
+      peer.on("error", (err) => {
+        if (peerRef.current !== peer) return;
+        const type = (err as { type?: string }).type;
+        if (type === "peer-unavailable" && Date.now() < deadline) {
+          // host may be mid-reconnect (e.g. just switched apps to send the link) — knock again
+          setTimeout(attempt, 2500);
+          return;
+        }
+        fail(type === "peer-unavailable" ? "room not found — check the code" : "network hiccup — try again");
       });
+
+      peer.on("open", attempt);
     },
     [clearTimer, teardown]
   );
@@ -314,5 +476,5 @@ export function useOnlineSession() {
     [hostApply]
   );
 
-  return { status, code, myName, names, myMark, error, game, host, join, move, cmd, leave };
+  return { status, code, myName, names, myMark, error, game, signalOk, disconnectReason, host, join, move, cmd, leave };
 }

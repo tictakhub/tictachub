@@ -391,7 +391,7 @@ export function OnlineGame({ session, lang, onLeave }: OnlineGameProps) {
         )}
       </AnimatePresence>
 
-      {/* opponent left */}
+      {/* opponent left / connection dropped */}
       <AnimatePresence>
         {session.status === "closed" && (
           <motion.div
@@ -401,30 +401,113 @@ export function OnlineGame({ session, lang, onLeave }: OnlineGameProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <div className="absolute inset-0 bg-ink/30 backdrop-blur-xl" />
+            <div className="absolute inset-0 bg-ink/40 backdrop-blur-2xl" />
             <motion.div
-              initial={{ scale: 0.9, y: 24, opacity: 0 }}
+              initial={{ scale: 0.88, y: 28, opacity: 0 }}
               animate={{ scale: 1, y: 0, opacity: 1 }}
-              transition={{ type: "spring", stiffness: 220, damping: 22, delay: 0.1 }}
-              className="relative flex w-full max-w-[340px] flex-col items-center gap-3 rounded-[1.75rem] bg-paper p-8 text-center shadow-[0_40px_80px_-30px_rgba(25,21,16,0.5)] ring-1 ring-ink/10"
+              transition={{ type: "spring", stiffness: 220, damping: 22, delay: 0.08 }}
+              className="relative flex w-full max-w-[360px] flex-col items-center gap-0 rounded-[2rem] bg-paper text-center shadow-[0_48px_96px_-32px_rgba(25,21,16,0.55)] ring-1 ring-ink/10 overflow-hidden"
             >
-              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-ink/8 text-ink/60 ring-1 ring-ink/10">
-                <Wifi className="h-5 w-5" strokeWidth={2} />
-              </span>
-              <h3 className="font-serif text-2xl italic tracking-tight">signal lost</h3>
-              <p className="text-[13px] leading-relaxed text-ink/55">
-                your opponent left the match. better luck with the next one.
-              </p>
-              <motion.button
-                type="button"
-                onClick={onLeave}
-                whileHover={{ scale: 1.04 }}
-                whileTap={{ scale: 0.94 }}
-                className="mt-2 flex items-center gap-2 rounded-full bg-ink px-7 py-3 text-sm font-semibold lowercase tracking-wide text-paper shadow-[0_16px_30px_-14px_rgba(25,21,16,0.55)] transition-colors hover:bg-coral focus:outline-none"
+              {/* coloured top band */}
+              <div
+                className={cn(
+                  "w-full px-8 pt-8 pb-5 flex flex-col items-center gap-3",
+                  session.disconnectReason === "left" ? "bg-coral/8" : "bg-ink/5"
+                )}
               >
-                <LogOut className="h-4 w-4" strokeWidth={2.5} />
-                back to local duel
-              </motion.button>
+                {/* icon */}
+                <motion.span
+                  animate={session.disconnectReason === "dropped" ? { opacity: [1, 0.3, 1] } : {}}
+                  transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
+                  className={cn(
+                    "grid h-12 w-12 place-items-center rounded-2xl ring-1",
+                    session.disconnectReason === "left"
+                      ? "bg-coral/15 text-coral ring-coral/25"
+                      : "bg-ink/8 text-ink/50 ring-ink/12"
+                  )}
+                >
+                  <Wifi className="h-5 w-5" strokeWidth={2} />
+                </motion.span>
+
+                {/* headline */}
+                <div>
+                  <h3 className="font-serif text-2xl italic tracking-tight">
+                    {session.disconnectReason === "left" ? "they left" : "signal lost"}
+                  </h3>
+                  <p className="mt-1 text-[13px] leading-relaxed text-ink/55">
+                    {session.disconnectReason === "left" ? (
+                      <>
+                        <span
+                          className={cn(
+                            "font-semibold",
+                            session.myMark === "X" ? "text-pine" : "text-coral"
+                          )}
+                        >
+                          {session.myMark === "X" ? names.O : names.X}
+                        </span>
+                        {" "}rage-quit the match
+                      </>
+                    ) : (
+                      "the connection dropped unexpectedly"
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* score snapshot */}
+              <div className="w-full px-8 py-5 flex items-center justify-center gap-4 border-y border-ink/[0.07]">
+                {/* X side */}
+                <div className="flex flex-col items-center gap-0.5 min-w-0">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-coral/70 truncate max-w-[90px]">
+                    {names.X}
+                  </span>
+                  <span className="font-serif text-4xl italic text-coral tabular-nums">{scores.X}</span>
+                </div>
+
+                <div className="flex flex-col items-center gap-1 text-ink/30">
+                  <span className="font-serif italic text-sm">vs</span>
+                  {scores.draws > 0 && (
+                    <span className="text-[10px] font-medium tracking-widest text-ink/35">
+                      {scores.draws}d
+                    </span>
+                  )}
+                </div>
+
+                {/* O side */}
+                <div className="flex flex-col items-center gap-0.5 min-w-0">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-pine/70 truncate max-w-[90px]">
+                    {names.O}
+                  </span>
+                  <span className="font-serif text-4xl italic text-pine tabular-nums">{scores.O}</span>
+                </div>
+              </div>
+
+              {/* context message */}
+              <div className="w-full px-8 py-4">
+                <p className="text-[12px] text-ink/45 leading-relaxed">
+                  {scores.X === 0 && scores.O === 0
+                    ? "no rounds were finished — the game had just begun."
+                    : scores[session.myMark ?? "X"] > scores[session.myMark === "X" ? "O" : "X"]
+                    ? "you were winning — their loss! 🏆"
+                    : scores[session.myMark ?? "X"] < scores[session.myMark === "X" ? "O" : "X"]
+                    ? "they were ahead, but it's not over until it's over."
+                    : "it was all tied up — what a time to bail!"}
+                </p>
+              </div>
+
+              {/* action */}
+              <div className="w-full px-8 pb-8">
+                <motion.button
+                  type="button"
+                  onClick={onLeave}
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.94 }}
+                  className="w-full flex items-center justify-center gap-2 rounded-full bg-ink px-7 py-3.5 text-sm font-semibold lowercase tracking-wide text-paper shadow-[0_16px_30px_-14px_rgba(25,21,16,0.55)] transition-colors hover:bg-coral focus:outline-none"
+                >
+                  <LogOut className="h-4 w-4" strokeWidth={2.5} />
+                  back to home
+                </motion.button>
+              </div>
             </motion.div>
           </motion.div>
         )}
