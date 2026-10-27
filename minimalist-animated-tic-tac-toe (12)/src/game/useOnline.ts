@@ -81,7 +81,7 @@ const PEER_CONFIG = {
 const TRANSIENT = new Set(["network", "server-error", "socket-error", "socket-closed", "disconnected"]);
 
 /** how long a guest keeps knocking before giving up (host may be switching apps to send the link) */
-const JOIN_PATIENCE_MS = 45000;
+const JOIN_PATIENCE_MS = 120_000; // 2 minutes
 
 export function useOnlineSession() {
   const [status, setStatus] = useState<SessionStatus>("idle");
@@ -260,13 +260,33 @@ export function useOnlineSession() {
         if (reconnectRef.current) clearTimeout(reconnectRef.current);
         reconnectRef.current = setTimeout(() => {
           reconnectRef.current = null;
-          if (peerRef.current === peer && !peer.destroyed && peer.disconnected) {
-            try {
-              peer.reconnect();
-            } catch {
-              /* noop */
+          if (peerRef.current !== peer || peer.destroyed) return;
+          if (!peer.disconnected) return; // already fine
+
+          // peer.reconnect() is unreliable in PeerJS — destroy & recreate with the same room ID
+          try { peer.destroy(); } catch { /* noop */ }
+
+          const freshPeer = new Peer(ROOM_PREFIX + c.toLowerCase(), PEER_CONFIG);
+          peerRef.current = freshPeer;
+
+          freshPeer.on("open", () => {
+            if (peerRef.current !== freshPeer) return;
+            setSignalOk(true);
+          });
+          freshPeer.on("disconnected", () => {
+            if (peerRef.current !== freshPeer) return;
+            setSignalOk(false);
+            scheduleReconnect(2000);
+          });
+          freshPeer.on("error", (err) => {
+            if (peerRef.current !== freshPeer) return;
+            const t = (err as { type?: string }).type ?? "";
+            if (TRANSIENT.has(t) || t === "unavailable-id") {
+              setSignalOk(false);
+              scheduleReconnect(3000);
             }
-          }
+          });
+          freshPeer.on("connection", peer.listeners("connection")[0] as never);
         }, ms);
       };
 
@@ -444,8 +464,8 @@ export function useOnlineSession() {
         if (peerRef.current !== peer) return;
         const type = (err as { type?: string }).type;
         if (type === "peer-unavailable" && Date.now() < deadline) {
-          // host may be mid-reconnect (e.g. just switched apps to send the link) — knock again
-          setTimeout(attempt, 2500);
+          // host may be mid-reconnect — knock again sooner
+          setTimeout(attempt, 1500);
           return;
         }
         fail(type === "peer-unavailable" ? "room not found — check the code" : "network hiccup — try again");

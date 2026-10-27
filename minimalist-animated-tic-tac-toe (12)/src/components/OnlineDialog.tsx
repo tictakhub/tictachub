@@ -506,14 +506,24 @@ export function OnlineDialog({
                   animate={{ scale: [1, 1.5, 1], opacity: [1, 0.5, 1] }}
                   transition={{ duration: 1.3, repeat: Infinity, ease: "easeInOut" }}
                 />
-                <span className="text-[12px] font-medium lowercase text-pine">
-                  waiting for your friend…
+                <span
+                  className={cn(
+                    "text-[12px] font-medium lowercase",
+                    session.signalOk ? "text-pine" : "text-coral"
+                  )}
+                >
+                  {session.signalOk ? "waiting for your friend…" : "reconnecting the room…"}
                 </span>
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-pine/60" strokeWidth={2.5} />
               </div>
               <p className="mt-3 max-w-[270px] text-center text-[11px] leading-relaxed text-ink/40">
                 the match begins the moment they open your link. keep this tab open!
               </p>
+              {session.error && (
+                <p className="mt-3 max-w-[260px] text-center text-[11.5px] font-medium lowercase text-coral">
+                  {session.error}
+                </p>
+              )}
               <BackRow onBack={back} />
             </motion.div>
           )}
@@ -525,15 +535,38 @@ export function OnlineDialog({
                 <div className="flex flex-col items-center gap-3 py-2">
                   <motion.span
                     className="grid h-12 w-12 place-items-center rounded-full bg-pine/12 text-pine"
-                    animate={{ scale: [1, 1.08, 1] }}
+                    animate={session.status === "connecting" ? { scale: [1, 1.08, 1] } : {}}
                     transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
                   >
                     <Wifi className="h-5 w-5" strokeWidth={2.25} />
                   </motion.span>
-                  <span className="flex items-center gap-2 text-[13px] font-medium lowercase text-ink/60">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
-                    entering room {initialCode}…
-                  </span>
+
+                  {session.status === "connecting" && (
+                    <span className="flex items-center gap-2 text-[13px] font-medium lowercase text-ink/60">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
+                      entering room {initialCode}…
+                    </span>
+                  )}
+
+                  {session.error && (
+                    <>
+                      <p className="max-w-[240px] text-center text-[12px] font-medium lowercase leading-relaxed text-coral">
+                        {session.error}
+                      </p>
+                      <motion.button
+                        type="button"
+                        whileHover={{ scale: 1.04 }}
+                        whileTap={{ scale: 0.94 }}
+                        onClick={() => {
+                          session.join(cleanName, initialCode);
+                        }}
+                        className="mt-1 flex items-center gap-2 rounded-full bg-pine px-6 py-2.5 text-sm font-semibold lowercase tracking-wide text-paper shadow-[0_12px_24px_-12px_rgba(25,21,16,0.45)] focus:outline-none"
+                      >
+                        <Loader2 className="h-3.5 w-3.5" strokeWidth={2.5} />
+                        try again
+                      </motion.button>
+                    </>
+                  )}
                 </div>
               ) : (
                 <>
